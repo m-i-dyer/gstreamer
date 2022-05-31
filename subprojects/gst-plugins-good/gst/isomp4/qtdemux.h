@@ -262,6 +262,10 @@ struct _GstQTDemux {
    * fields. */
   gboolean received_seek;
   gboolean first_moof_already_parsed;
+
+  /* When playing a segment, always play from the closest IDR,
+   * even if this means repeat IDRs are sent */
+  gboolean repeat_idr;
 };
 
 struct _GstQTDemuxClass {

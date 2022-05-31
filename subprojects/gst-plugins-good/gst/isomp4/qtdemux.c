@@ -393,6 +393,50 @@ static void gst_qtdemux_append_protection_system_id (GstQTDemux * qtdemux,
 static void qtdemux_gst_structure_free (GstStructure * gststructure);
 static void gst_qtdemux_reset (GstQTDemux * qtdemux, gboolean hard);
 
+enum
+{
+  PROP_0,
+  PROP_REPEAT_IDR,
+};
+
+#define DEFAULT_REPEAT_IDR FALSE
+
+static void
+gst_qtdemux_set_property (GObject * object,
+    guint prop_id, const GValue * value, GParamSpec * pspec)
+{
+  GstQTDemux *qtdemux = GST_QTDEMUX (object);
+
+  GST_OBJECT_LOCK (qtdemux);
+  switch (prop_id) {
+    case PROP_REPEAT_IDR:
+      qtdemux->repeat_idr = g_value_get_boolean (value);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
+  GST_OBJECT_UNLOCK (qtdemux);
+}
+
+static void
+gst_qtdemux_get_property (GObject * object,
+    guint prop_id, GValue * value, GParamSpec * pspec)
+{
+  GstQTDemux *qtdemux = GST_QTDEMUX (object);
+
+  GST_OBJECT_LOCK (qtdemux);
+  switch (prop_id) {
+    case PROP_REPEAT_IDR:
+      g_value_set_boolean (value, qtdemux->repeat_idr);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
+  GST_OBJECT_UNLOCK (qtdemux);
+}
+
 static void
 gst_qtdemux_class_init (GstQTDemuxClass * klass)
 {
@@ -406,6 +450,13 @@ gst_qtdemux_class_init (GstQTDemuxClass * klass)
 
   gobject_class->dispose = gst_qtdemux_dispose;
   gobject_class->finalize = gst_qtdemux_finalize;
+  gobject_class->get_property = gst_qtdemux_get_property;
+  gobject_class->set_property = gst_qtdemux_set_property;
+
+  g_object_class_install_property (gobject_class, PROP_REPEAT_IDR,
+      g_param_spec_boolean ("repeat-idr", "Repeat IDR frames",
+          "Always send an IDR frame at segment start", DEFAULT_REPEAT_IDR,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gstelement_class->change_state = GST_DEBUG_FUNCPTR (gst_qtdemux_change_state);
 #if 0
@@ -457,6 +508,8 @@ gst_qtdemux_init (GstQTDemux * qtdemux)
       ((GDestroyNotify) gst_qtdemux_stream_unref);
 
   GST_OBJECT_FLAG_SET (qtdemux, GST_ELEMENT_FLAG_INDEXABLE);
+
+  qtdemux->repeat_idr = DEFAULT_REPEAT_IDR;
 
   gst_qtdemux_reset (qtdemux, TRUE);
 }
@@ -1408,8 +1461,8 @@ gst_qtdemux_perform_seek (GstQTDemux * qtdemux, GstSegment * segment,
     gint64 min_offset;
     gboolean next, before, after;
 
-    before = ! !(flags & GST_SEEK_FLAG_SNAP_BEFORE);
-    after = ! !(flags & GST_SEEK_FLAG_SNAP_AFTER);
+    before = !!(flags & GST_SEEK_FLAG_SNAP_BEFORE);
+    after = !!(flags & GST_SEEK_FLAG_SNAP_AFTER);
     next = after && !before;
     if (segment->rate < 0)
       next = !next;
@@ -1489,8 +1542,8 @@ gst_qtdemux_do_seek (GstQTDemux * qtdemux, GstPad * pad, GstEvent * event)
 
   GST_DEBUG_OBJECT (qtdemux, "seek format %s", gst_format_get_name (format));
 
-  flush = ! !(flags & GST_SEEK_FLAG_FLUSH);
-  instant_rate_change = ! !(flags & GST_SEEK_FLAG_INSTANT_RATE_CHANGE);
+  flush = !!(flags & GST_SEEK_FLAG_FLUSH);
+  instant_rate_change = !!(flags & GST_SEEK_FLAG_INSTANT_RATE_CHANGE);
 
   /* Directly send the instant-rate-change event here before taking the
    * stream-lock so that it can be applied as soon as possible */
@@ -1637,7 +1690,7 @@ gst_qtdemux_handle_src_event (GstPad * pad, GstObject * parent,
 
       gst_event_parse_seek (event, NULL, &seek_format, &flags, NULL, NULL, NULL,
           NULL);
-      instant_rate_change = ! !(flags & GST_SEEK_FLAG_INSTANT_RATE_CHANGE);
+      instant_rate_change = !!(flags & GST_SEEK_FLAG_INSTANT_RATE_CHANGE);
 
       if (seqnum == qtdemux->segment_seqnum) {
         GST_LOG_OBJECT (pad,
@@ -5188,12 +5241,23 @@ gst_qtdemux_activate_segment (GstQTDemux * qtdemux, QtDemuxStream * stream,
           GST_TIME_ARGS (QTSAMPLE_DTS (stream, &stream->samples[kf_index])));
       gst_qtdemux_move_stream (qtdemux, stream, kf_index);
     } else {
-      GST_DEBUG_OBJECT (stream->pad,
-          "moving forwards, keyframe at %u "
-          "(pts %" GST_TIME_FORMAT " dts %" GST_TIME_FORMAT " ) already sent",
-          kf_index,
-          GST_TIME_ARGS (QTSAMPLE_PTS (stream, &stream->samples[kf_index])),
-          GST_TIME_ARGS (QTSAMPLE_DTS (stream, &stream->samples[kf_index])));
+      if (!qtdemux->repeat_idr) {
+        GST_DEBUG_OBJECT (stream->pad,
+            "moving forwards, keyframe at %u "
+            "(pts %" GST_TIME_FORMAT " dts %" GST_TIME_FORMAT " ) already sent",
+            kf_index,
+            GST_TIME_ARGS (QTSAMPLE_PTS (stream, &stream->samples[kf_index])),
+            GST_TIME_ARGS (QTSAMPLE_DTS (stream, &stream->samples[kf_index])));
+      } else {
+        GST_DEBUG_OBJECT (stream->pad,
+            "moving backwards to %sframe at %u "
+            "(pts %" GST_TIME_FORMAT " dts %" GST_TIME_FORMAT
+            " ) to repeat previous IDR",
+            (stream->subtype == FOURCC_soun) ? "audio " : "key", kf_index,
+            GST_TIME_ARGS (QTSAMPLE_PTS (stream, &stream->samples[kf_index])),
+            GST_TIME_ARGS (QTSAMPLE_DTS (stream, &stream->samples[kf_index])));
+        gst_qtdemux_move_stream (qtdemux, stream, kf_index);
+      }
     }
   } else {
     GST_DEBUG_OBJECT (stream->pad,
@@ -9391,7 +9455,7 @@ qtdemux_stbl_init (GstQTDemux * qtdemux, QtDemuxStream * stream, GNode * stbl)
   /* sync sample atom */
   stream->stps_present = FALSE;
   if ((stream->stss_present =
-          ! !qtdemux_tree_get_child_by_type_full (stbl, FOURCC_stss,
+          !!qtdemux_tree_get_child_by_type_full (stbl, FOURCC_stss,
               &stream->stss) ? TRUE : FALSE) == TRUE) {
     /* copy atom data into a new buffer for later use */
     stream->stss.data = g_memdup2 (stream->stss.data, stream->stss.size);
@@ -9409,7 +9473,7 @@ qtdemux_stbl_init (GstQTDemux * qtdemux, QtDemuxStream * stream, GNode * stbl)
 
     /* partial sync sample atom */
     if ((stream->stps_present =
-            ! !qtdemux_tree_get_child_by_type_full (stbl, FOURCC_stps,
+            !!qtdemux_tree_get_child_by_type_full (stbl, FOURCC_stps,
                 &stream->stps) ? TRUE : FALSE) == TRUE) {
       /* copy atom data into a new buffer for later use */
       stream->stps.data = g_memdup2 (stream->stps.data, stream->stps.size);
@@ -9509,7 +9573,7 @@ qtdemux_stbl_init (GstQTDemux * qtdemux, QtDemuxStream * stream, GNode * stbl)
 
   /* composition time-to-sample */
   if ((stream->ctts_present =
-          ! !qtdemux_tree_get_child_by_type_full (stbl, FOURCC_ctts,
+          !!qtdemux_tree_get_child_by_type_full (stbl, FOURCC_ctts,
               &stream->ctts) ? TRUE : FALSE) == TRUE) {
     GstByteReader cslg = GST_BYTE_READER_INIT (NULL, 0);
     guint8 ctts_version;
