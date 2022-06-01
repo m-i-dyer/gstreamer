@@ -266,6 +266,10 @@ struct _GstQTDemux {
   /* When playing a segment, always play from the closest IDR,
    * even if this means repeat IDRs are sent */
   gboolean repeat_idr;
+
+  /* Do not send a dummy segment when internal duration tracking state
+   * is updated. */
+  gboolean ignore_dummy;
 };
 
 struct _GstQTDemuxClass {

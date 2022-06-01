@@ -397,9 +397,11 @@ enum
 {
   PROP_0,
   PROP_REPEAT_IDR,
+  PROP_IGNORE_DUMMY,
 };
 
 #define DEFAULT_REPEAT_IDR FALSE
+#define DEFAULT_IGNORE_DUMMY FALSE
 
 static void
 gst_qtdemux_set_property (GObject * object,
@@ -411,6 +413,9 @@ gst_qtdemux_set_property (GObject * object,
   switch (prop_id) {
     case PROP_REPEAT_IDR:
       qtdemux->repeat_idr = g_value_get_boolean (value);
+      break;
+    case PROP_IGNORE_DUMMY:
+      qtdemux->ignore_dummy = g_value_get_boolean (value);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -429,6 +434,9 @@ gst_qtdemux_get_property (GObject * object,
   switch (prop_id) {
     case PROP_REPEAT_IDR:
       g_value_set_boolean (value, qtdemux->repeat_idr);
+      break;
+    case PROP_IGNORE_DUMMY:
+      g_value_set_boolean (value, qtdemux->ignore_dummy);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -456,6 +464,11 @@ gst_qtdemux_class_init (GstQTDemuxClass * klass)
   g_object_class_install_property (gobject_class, PROP_REPEAT_IDR,
       g_param_spec_boolean ("repeat-idr", "Repeat IDR frames",
           "Always send an IDR frame at segment start", DEFAULT_REPEAT_IDR,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_IGNORE_DUMMY,
+      g_param_spec_boolean ("ignore-dummy", "Ignore dummy segment",
+          "Don't send a dummy segment event", DEFAULT_IGNORE_DUMMY,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gstelement_class->change_state = GST_DEBUG_FUNCPTR (gst_qtdemux_change_state);
@@ -510,6 +523,7 @@ gst_qtdemux_init (GstQTDemux * qtdemux)
   GST_OBJECT_FLAG_SET (qtdemux, GST_ELEMENT_FLAG_INDEXABLE);
 
   qtdemux->repeat_idr = DEFAULT_REPEAT_IDR;
+  qtdemux->ignore_dummy = DEFAULT_IGNORE_DUMMY;
 
   gst_qtdemux_reset (qtdemux, TRUE);
 }
@@ -3279,7 +3293,7 @@ check_update_duration (GstQTDemux * qtdemux, GstClockTime duration)
        * it and spamming downstream accordingly with segment events */
       /* also mangle the edit list end time when fragmented with a single edit
        * list that may only cover any non-fragmented data */
-      if ((stream->dummy_segment ||
+      if (!qtdemux->ignore_dummy && (stream->dummy_segment ||
               (qtdemux->fragmented && stream->n_segments == 1)) &&
           GST_CLOCK_TIME_IS_VALID (stream->segments[0].duration)) {
         /* Update all dummy values to new duration */
